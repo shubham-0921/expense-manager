@@ -1,0 +1,6 @@
+.env
+*.tar
+__pycache__/
+*.pyc
+*.json
+!docker-compose.yml
