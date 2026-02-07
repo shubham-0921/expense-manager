@@ -1,35 +1,33 @@
 # Telegram Expense Tracker Bot
 
-A Telegram bot that accepts text and voice messages to log expenses via a Langflow AI agent. Voice messages are transcribed locally using OpenAI Whisper.
+A Telegram bot that accepts text, voice messages, and receipt photos to log expenses via a LangGraph AI agent. Voice messages are transcribed locally using faster-whisper, and receipt photos are parsed using Claude Vision.
 
 ## Architecture
 
 ```
 Telegram App (phone/desktop)
     │
-    ▼
-Telegram Bot (this service, runs locally)
-    │
-    ├── Text message ─────────────────┐
-    │                                  ▼
-    └── Voice message ──► Whisper ──► Langflow Agent (localhost:7860)
-                          (local)          │
-                                           ▼
-                                      MCP Server (VM:8001)
-                                           │
-                                           ▼
-                                      FastAPI (VM:8000)
-                                           │
-                                           ▼
-                                      Google Sheets
+    ├── Text message ─────────────────────────┐
+    │                                          ▼
+    ├── Voice message ──► faster-whisper ──► LangGraph Agent (localhost:7860)
+    │                      (local STT)            │
+    └── Photo (receipt) ──► Claude Vision ────────┤
+                            (Anthropic API)       ▼
+                                             MCP Server (localhost:8001)
+                                                  │
+                                                  ▼
+                                             FastAPI (localhost:8000)
+                                                  │
+                                                  ▼
+                                             Google Sheets
 ```
 
 ## Prerequisites
 
 - **Python 3.10+**
-- **ffmpeg** — required by Whisper for audio processing
-- **Langflow** running locally with the expense tracker agent configured
-- **MCP Server + FastAPI** running on the VM (see root `deployment.md`)
+- **ffmpeg** — required by faster-whisper for audio processing
+- **LangGraph agent** running (see `langgraph-agent/`)
+- **MCP Server + FastAPI** running (see root `deployment.md`)
 - A **Telegram bot token** from [@BotFather](https://t.me/BotFather)
 
 ## Setup
@@ -58,11 +56,6 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> **Note:** `openai-whisper` downloads model weights on first run (~150MB for `small`). If you hit an SSL error on macOS, run:
-> ```bash
-> export SSL_CERT_FILE=$(python3 -c "import certifi; print(certifi.where())")
-> ```
-
 ### 4. Configure environment variables
 
 Copy and edit the `.env` file:
@@ -74,20 +67,24 @@ cp .env.example .env   # or edit .env directly
 | Variable | Required | Description |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather |
-| `LANGFLOW_API_URL` | Yes | Langflow flow run endpoint (e.g. `http://localhost:7860/api/v1/run/<flow-id>`) |
-| `LANGFLOW_API_KEY` | No | Langflow API key (if authentication is enabled) |
-| `WHISPER_MODEL` | No | Whisper model size: `tiny`, `base`, `small`, `medium`, `large` (default: `base`) |
-| `ALLOWED_USER_IDS` | No | Comma-separated Telegram user IDs to restrict access (empty = allow all) |
+| `LANGFLOW_API_URL` | Yes | LangGraph agent endpoint (e.g. `http://localhost:7860/api/v1/run/<flow-id>`) |
+| `LANGFLOW_API_KEY` | No | API key for the agent endpoint (if authentication is enabled) |
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Claude Vision (receipt parsing) |
+| `VISION_MODEL` | No | Claude model for receipt parsing (default: `claude-haiku-4-5-20251001`) |
+| `WHISPER_MODEL` | No | faster-whisper model size: `tiny`, `base`, `small`, `medium`, `large-v3` (default: `base`) |
+| `EXPENSE_API_URL` | No | Base URL of the expense API for user registration (default: `http://localhost:8000`) |
+| `SERVICE_ACCOUNT_EMAIL` | No | Google service account email shown in /setup instructions |
+| `SESSION_MAX_MESSAGES` | No | Messages per session before rotating session ID (default: `5`) |
 
-**Whisper model sizes:**
+**Whisper model sizes (faster-whisper):**
 
-| Model | Size | Speed | Accuracy |
-|---|---|---|---|
-| `tiny` | 39 MB | Fastest | Low |
-| `base` | 74 MB | Fast | OK |
-| `small` | 244 MB | Medium | Good (recommended) |
-| `medium` | 769 MB | Slow | Better |
-| `large` | 1.5 GB | Slowest | Best |
+| Model | Speed | Accuracy |
+|---|---|---|
+| `tiny` | Fastest | Low |
+| `base` | Fast | OK |
+| `small` | Medium | Good (recommended) |
+| `medium` | Slow | Better |
+| `large-v3` | Slowest | Best |
 
 ### 5. Run the bot
 
@@ -103,9 +100,14 @@ INFO:__main__:Whisper model loaded.
 INFO:__main__:Bot started. Polling for messages...
 ```
 
-The bot is now running and will respond to messages in Telegram.
-
 ## Usage
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `/start` | Show welcome message and setup instructions |
+| `/setup <spreadsheet-id> [sheet-name]` | Register your Google Sheet for expense tracking |
 
 ### Text messages
 
@@ -122,22 +124,27 @@ show my summary
 
 Record a voice message in Telegram describing your expense. The bot will:
 1. Download the audio
-2. Transcribe it using Whisper (shows "Heard: ..." confirmation)
-3. Send the transcript to the Langflow agent
+2. Transcribe it using faster-whisper (shows "Heard: ..." confirmation)
+3. Send the transcript to the LangGraph agent
 4. Reply with the agent's response
 
-### Commands
+### Receipt photos
 
-| Command | Description |
-|---|---|
-| `/start` | Show welcome message and usage examples |
+Send a photo of a receipt, bill, or invoice. The bot will:
+1. Download the highest-resolution photo
+2. Extract expense details using Claude Vision (shows "Extracted: ..." confirmation)
+3. Send the extracted text to the LangGraph agent
+4. Reply with the agent's response
+
+Non-receipt photos are rejected with a helpful message.
 
 ## How It Works
 
-1. **Text flow:** User sends text → bot forwards to Langflow API → Langflow agent calls MCP tools → response sent back to user
-2. **Voice flow:** User sends voice → bot downloads `.ogg` file → Whisper transcribes locally → transcript sent to Langflow → same as text flow
-3. **Session isolation:** Each message gets a unique `session_id` (UUID) to prevent Langflow context buildup and hallucination after many messages
-4. **Authorization:** If `ALLOWED_USER_IDS` is set, only those Telegram user IDs can interact with the bot
+1. **User registration:** Users run `/setup <spreadsheet-id>` to register their Google Sheet. The bot calls the expense API to store the mapping.
+2. **Text flow:** User sends text → bot forwards to LangGraph agent → agent calls MCP tools → expense logged to Google Sheets → response sent back
+3. **Voice flow:** User sends voice → bot downloads `.ogg` → faster-whisper transcribes locally → transcript sent to agent → same as text flow
+4. **Photo flow:** User sends photo → bot downloads image → Claude Vision extracts expense details → extracted text sent to agent → same as text flow
+5. **Session rotation:** Messages share a session ID for up to `SESSION_MAX_MESSAGES` (default 5), then the session rotates to prevent context buildup. The LangGraph agent uses this for conversation memory within a session.
 
 ## Troubleshooting
 
@@ -146,27 +153,30 @@ Record a voice message in Telegram describing your expense. The bot will:
 - Verify `TELEGRAM_BOT_TOKEN` is correct
 - Make sure you messaged the right bot in Telegram
 
+### "You haven't set up your Google Sheet yet!"
+- Run `/setup <spreadsheet-id>` with your Google Sheet ID
+- Make sure the expense API is running and reachable at `EXPENSE_API_URL`
+
 ### "Sorry, something went wrong processing your request."
-- Langflow is not running or unreachable
+- LangGraph agent is not running or unreachable
 - Check `LANGFLOW_API_URL` is correct
-- Check Langflow logs for errors
+- Check agent logs: `docker logs langgraph-agent`
 
 ### Voice transcription is empty or wrong
 - Upgrade the Whisper model: set `WHISPER_MODEL=small` or `medium` in `.env`
 - Make sure `ffmpeg` is installed: `ffmpeg -version`
 - Speak clearly and avoid very short recordings
 
-### SSL certificate error when downloading Whisper model
-```bash
-export SSL_CERT_FILE=$(python3 -c "import certifi; print(certifi.where())")
-pip install certifi
-```
+### Receipt photo not recognized
+- Make sure the photo is clear and well-lit
+- The image should show a receipt, bill, or invoice with visible amounts
+- If Claude Vision can't read the amount, it will ask for a clearer photo
+- You can always type the expense details manually instead
 
 ### Expenses not reaching Google Sheets
-- Check that MCP server and FastAPI are running on the VM: `docker compose ps`
-- Check VM container logs: `docker compose logs --tail=50`
-- Verify Langflow is actually calling MCP tools (check Langflow output panel)
-- If it worked before then stopped — Langflow session context may be too long. The `session_id` fix should prevent this.
+- Check that MCP server and FastAPI are running: `docker ps`
+- Check container logs: `docker logs expense-api`, `docker logs expense-mcp`
+- Make sure you've shared your Google Sheet with the service account email
 
 ### Finding your Telegram user ID
 Send a message to [@userinfobot](https://t.me/userinfobot) on Telegram — it will reply with your user ID.

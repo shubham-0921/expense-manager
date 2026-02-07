@@ -3,6 +3,7 @@ from typing import Optional
 
 
 class ExpenseRequest(BaseModel):
+    user_id: str = Field(..., description="Telegram user ID")
     date: str = Field(..., description="Date of expense (e.g. '2025-01-15' or '15 Jan 2025')")
     amount: float = Field(..., description="Expense amount")
     payment_method: str = Field("", description="Payment method (e.g. 'UPI', 'Cash', 'Credit Card')")
@@ -30,3 +31,14 @@ class SummaryResponse(BaseModel):
     by_category: dict[str, float]
     by_payment_mode: dict[str, float]
     filters_applied: dict[str, str]
+
+
+class UserRegistrationRequest(BaseModel):
+    telegram_user_id: str = Field(..., description="Telegram user ID")
+    spreadsheet_id: str = Field(..., description="Google Sheets spreadsheet ID")
+    sheet_name: str = Field("Sheet1", description="Sheet name within the spreadsheet")
+
+
+class UserRegistrationResponse(BaseModel):
+    status: str
+    message: str

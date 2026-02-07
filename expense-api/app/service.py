@@ -1,6 +1,7 @@
 from collections import defaultdict
 from datetime import datetime
 
+from app.database import get_user
 from app.models import ExpenseRequest, ExpenseResponse, SummaryResponse
 from app.sheets_client import SheetsClient
 
@@ -9,7 +10,15 @@ class ExpenseService:
     def __init__(self, client: SheetsClient):
         self.client = client
 
+    def _get_user_sheet(self, user_id: str) -> tuple[str, str]:
+        """Look up the user's spreadsheet_id and sheet_name from the database."""
+        user = get_user(user_id)
+        if user is None:
+            raise ValueError(f"User {user_id} is not registered. Use /setup to register your Google Sheet.")
+        return user["spreadsheet_id"], user["sheet_name"]
+
     def add_expense(self, expense: ExpenseRequest) -> ExpenseResponse:
+        spreadsheet_id, sheet_name = self._get_user_sheet(expense.user_id)
         row = [
             expense.date,
             str(expense.amount),
@@ -20,15 +29,16 @@ class ExpenseService:
             expense.added_to_split,
             expense.comment,
         ]
-        row_number = self.client.append_row(row)
+        row_number = self.client.append_row(spreadsheet_id, sheet_name, row)
         return ExpenseResponse(
             status="success",
             message=f"Expense of {expense.amount} added to row {row_number}",
             row_number=row_number,
         )
 
-    def get_summary(self, month: str | None = None, category: str | None = None) -> SummaryResponse:
-        rows = self.client.get_all_rows()
+    def get_summary(self, user_id: str, month: str | None = None, category: str | None = None) -> SummaryResponse:
+        spreadsheet_id, sheet_name = self._get_user_sheet(user_id)
+        rows = self.client.get_all_rows(spreadsheet_id, sheet_name)
         filters_applied: dict[str, str] = {}
 
         if month:

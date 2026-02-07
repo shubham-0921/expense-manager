@@ -1,71 +1,134 @@
-# Deployment Guide — GCP VM
+# Deployment Guide — GCP VM (vm2)
 
 ## Prerequisites
 
-- A GCP VM instance (e.g. `mcp-server-1` in `us-central1-a`)
-- Docker installed on the VM
-- Google service account JSON file
-- Ports **8000** and **8001** open in the VM firewall
+- GCP VM `vm2` (zone `us-central1-c`, project `project-796df5af-a68e-4648-a8f`) with Docker installed
+- Google service account JSON file on the VM
+- Ports **8000**, **8001**, and **7860** open in the VM firewall
 
-## 1. Copy files to VM
+## 1. Build Docker images locally (for Linux VM)
+
+Build all images for `linux/amd64` from your Mac:
 
 ```bash
-# Copy the project
-gcloud compute scp --recurse /Users/shubham/Desktop/Projects/custom-expense-tracker-mcp-server mcp-server-1:~ --zone=us-central1-a
-
-# Copy the service account JSON
-gcloud compute scp /Users/shubham/Desktop/Projects/dark-quasar-329408-cb7c3cbf1f34.json mcp-server-1:~ --zone=us-central1-a
+docker buildx build --platform linux/amd64 -t expense-api ./expense-api
+docker buildx build --platform linux/amd64 -t expense-mcp ./expense-mcp
+docker buildx build --platform linux/amd64 -t langgraph-agent ./langgraph-agent
+docker buildx build --platform linux/amd64 -t telegram-bot ./telegram-bot
 ```
 
-## 2. Install Docker Compose on the VM
-
-SSH into the VM:
+## 2. Save and copy to VM
 
 ```bash
-gcloud compute ssh mcp-server-1 --zone=us-central1-a
+# Save images as tar files
+docker save expense-api -o expense-api.tar
+docker save expense-mcp -o expense-mcp.tar
+docker save langgraph-agent -o langgraph-agent.tar
+docker save telegram-bot -o telegram-bot.tar
+
+# Copy to vm2
+gcloud compute scp expense-api.tar vm2:~ --zone=us-central1-c --project=project-796df5af-a68e-4648-a8f
+gcloud compute scp expense-mcp.tar vm2:~ --zone=us-central1-c --project=project-796df5af-a68e-4648-a8f
+gcloud compute scp langgraph-agent.tar vm2:~ --zone=us-central1-c --project=project-796df5af-a68e-4648-a8f
+gcloud compute scp telegram-bot.tar vm2:~ --zone=us-central1-c --project=project-796df5af-a68e-4648-a8f
+
+# Copy service account JSON
+gcloud compute scp /Users/shubham/Desktop/Projects/dark-quasar-329408-cb7c3cbf1f34.json vm2:~/service-account-key.json --zone=us-central1-c --project=project-796df5af-a68e-4648-a8f
 ```
 
-Install the Docker Compose plugin:
+## 3. Load images on VM
+
+SSH into vm2:
 
 ```bash
-mkdir -p /usr/local/lib/docker/cli-plugins
-curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose
-chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+gcloud compute ssh --zone "us-central1-c" "vm2" --project "project-796df5af-a68e-4648-a8f"
 ```
 
-Verify:
+Load all images:
 
 ```bash
-docker compose version
+docker load -i expense-api.tar
+docker load -i expense-mcp.tar
+docker load -i langgraph-agent.tar
+docker load -i telegram-bot.tar
 ```
 
-## 3. Build and run
+## 4. Run containers
+
+All containers use `--network host` so they can reach each other via `localhost`.
+
+### Expense API (port 8000)
 
 ```bash
-cd ~/custom-expense-tracker-mcp-server
-
-export GOOGLE_SERVICE_ACCOUNT_FILE=~/dark-quasar-329408-cb7c3cbf1f34.json
-
-docker compose up --build -d
+docker run -d \
+  --network host \
+  -e GOOGLE_SERVICE_ACCOUNT_FILE=/app/service_account.json \
+  -e DATABASE_PATH=/app/data/users.db \
+  -v /home/shubham/service-account-key.json:/app/service_account.json:ro \
+  --name expense-api \
+  expense-api
 ```
 
-## 4. Verify
+### Expense MCP Server (port 8001)
 
 ```bash
-# Check containers are running
-docker compose ps
+docker run -d \
+  --network host \
+  -e API_BASE_URL=http://localhost:8000 \
+  --name expense-mcp \
+  expense-mcp
+```
 
-# Check logs
-docker compose logs -f
+### LangGraph Agent (port 7860)
+
+```bash
+docker run -d \
+  --network host \
+  -e ANTHROPIC_API_KEY=<YOUR_ANTHROPIC_API_KEY> \
+  -e MCP_SERVER_URL=http://localhost:8001/mcp/ \
+  -e MODEL_NAME=claude-haiku-4-5-20251001 \
+  --name langgraph-agent \
+  langgraph-agent
+```
+
+### Telegram Bot
+
+```bash
+docker run -d \
+  --network host \
+  -e TELEGRAM_BOT_TOKEN=<YOUR_TELEGRAM_BOT_TOKEN> \
+  -e LANGFLOW_API_URL=http://localhost:7860/api/v1/run/e0a31254-b3c0-4801-80ce-c8ec1dd013ad \
+  -e LANGFLOW_API_KEY=<YOUR_LANGFLOW_API_KEY> \
+  -e ANTHROPIC_API_KEY=<YOUR_ANTHROPIC_API_KEY> \
+  -e WHISPER_MODEL=small \
+  -e VISION_MODEL=claude-haiku-4-5-20251001 \
+  -e EXPENSE_API_URL=http://localhost:8000 \
+  -e SERVICE_ACCOUNT_EMAIL=la-ferrari@dark-quasar-329408.iam.gserviceaccount.com \
+  -e SESSION_MAX_MESSAGES=5 \
+  --name telegram-bot \
+  telegram-bot
+```
+
+## 5. Verify
+
+```bash
+# Check all containers are running
+docker ps
 
 # Test the API
 curl http://localhost:8000/health
 
 # Test the MCP endpoint
 curl http://localhost:8001/mcp
+
+# Test the LangGraph agent
+curl http://localhost:7860/health
+
+# Check Telegram bot logs
+docker logs telegram-bot
 ```
 
-## 5. Configure Claude Desktop
+## 6. Configure Claude Desktop (optional)
 
 Update `claude_desktop_config.json` to point to the VM's external IP:
 
@@ -81,124 +144,62 @@ Update `claude_desktop_config.json` to point to the VM's external IP:
 }
 ```
 
-## 6. Deploy LangGraph Agent
-
-### Build locally (for Linux VM)
-
-```bash
-docker buildx build --platform linux/amd64 -t langgraph-agent ./langgraph-agent
-```
-
-### Copy to VM
-
-```bash
-docker save langgraph-agent -o langgraph-agent.tar
-gcloud compute scp langgraph-agent.tar mcp-server-1:~ --zone=us-central1-a
-```
-
-### Load and run on VM
-
-```bash
-gcloud compute ssh mcp-server-1 --zone=us-central1-a
-docker load -i ~/langgraph-agent.tar
-docker run -d \
-  --network host \
-  -e ANTHROPIC_API_KEY=<your-anthropic-api-key> \
-  -e MCP_SERVER_URL=http://localhost:8001/mcp/ \
-  -e MODEL_NAME=claude-haiku-4-5-20251001 \
-  --name langgraph-agent \
-  langgraph-agent
-```
-
-### Verify
-
-```bash
-curl http://localhost:7860/health
-```
-
-## 7. Deploy Telegram Bot
-
-### Build locally (for Linux VM)
-
-```bash
-docker buildx build --platform linux/amd64 -t telegram-bot ./telegram-bot
-```
-
-### Copy to VM
-
-```bash
-docker save telegram-bot -o telegram-bot.tar
-gcloud compute scp telegram-bot.tar mcp-server-1:~ --zone=us-central1-a
-```
-
-### Load and run on VM
-
-```bash
-gcloud compute ssh mcp-server-1 --zone=us-central1-a
-docker load -i ~/telegram-bot.tar
-docker run -d \
-  --network host \
-  -e TELEGRAM_BOT_TOKEN=<your-telegram-bot-token> \
-  -e LANGFLOW_API_URL=http://localhost:7860/api/v1/run/expense-tracker \
-  -e WHISPER_MODEL=base \
-  --name telegram-bot \
-  telegram-bot
-```
-
-### Verify
-
-```bash
-docker logs telegram-bot
-```
-
 ## Open firewall ports (if needed)
 
 ```bash
-gcloud compute firewall-rules update allow-expense-tracker \
+gcloud compute firewall-rules create allow-expense-tracker \
     --allow tcp:8000,tcp:8001,tcp:7860 \
+    --source-ranges 0.0.0.0/0 \
+    --project=project-796df5af-a68e-4648-a8f \
     --description "Allow expense tracker API, MCP, and LangGraph agent"
 ```
 
 ## Useful commands
 
 ```bash
-# Stop services
-docker compose down
-
-# Rebuild after code changes
-docker compose up --build -d
-
-# View logs for a specific service
-docker compose logs -f expense-api
-docker compose logs -f expense-mcp
-
-# Restart a single service
-docker compose restart expense-mcp
-
-# View LangGraph agent logs
+# View logs
+docker logs -f expense-api
+docker logs -f expense-mcp
 docker logs -f langgraph-agent
-
-# View Telegram bot logs
 docker logs -f telegram-bot
 
-# Restart LangGraph agent
+# Restart a container
+docker restart expense-api
+docker restart expense-mcp
 docker restart langgraph-agent
-
-# Restart Telegram bot
 docker restart telegram-bot
 
-# Stop and remove LangGraph agent
+# Stop and remove a container
+docker rm -f expense-api
+docker rm -f expense-mcp
 docker rm -f langgraph-agent
-
-# Stop and remove Telegram bot
 docker rm -f telegram-bot
+
+# Stop and remove all containers
+docker rm -f expense-api expense-mcp langgraph-agent telegram-bot
+
+# Clean up old images and containers
+docker system prune -a
 ```
 
-## Open firewall ports (if needed)
+## Redeployment (after code changes)
+
+To redeploy a single service (e.g. expense-api):
 
 ```bash
-gcloud compute firewall-rules create allow-expense-tracker \
-    --allow tcp:8000,tcp:8001 \
-    --source-ranges 0.0.0.0/0 \
-    --description "Allow expense tracker API and MCP"
+# On your Mac:
+docker buildx build --platform linux/amd64 -t expense-api ./expense-api
+docker save expense-api -o expense-api.tar
+gcloud compute scp expense-api.tar vm2:~ --zone=us-central1-c --project=project-796df5af-a68e-4648-a8f
+
+# On the VM:
+docker rm -f expense-api
+docker load -i ~/expense-api.tar
+docker run -d \
+  --network host \
+  -e GOOGLE_SERVICE_ACCOUNT_FILE=/app/service_account.json \
+  -e DATABASE_PATH=/app/data/users.db \
+  -v /home/shubham/service-account-key.json:/app/service_account.json:ro \
+  --name expense-api \
+  expense-api
 ```

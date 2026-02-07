@@ -17,6 +17,7 @@ mcp = FastMCP(
 
 @mcp.tool
 async def add_expense(
+    user_id: str,
     amount: float,
     category: str,
     date: str = "",
@@ -27,14 +28,15 @@ async def add_expense(
     """Add an expense to the tracker.
 
     Args:
+        user_id: The user's unique identifier (Telegram user ID). Always pass this.
         amount: The expense amount (e.g. 300)
         category: Category like food, groceries, transport, shopping, subscriptions, etc.
-        date: Date of expense (e.g. '18 January'). Defaults to today if not provided.
+        date: Date of expense as a concrete date (e.g. '7 February 2026'). NEVER pass relative words like 'today' or 'yesterday' — always resolve them to the actual date before calling this tool.
         payment_method: How it was paid (e.g. 'rupay credit card', 'axis select', 'cash', 'upi')
         comment: What the expense was for (e.g. 'magnolia bakery', 'uber to airport')
         split_with: Person to split with, or 'none' if not splitting
     """
-    payload = {"amount": amount, "category": category}
+    payload = {"user_id": user_id, "amount": amount, "category": category}
     if date:
         payload["date"] = date
     if payment_method:
@@ -68,14 +70,19 @@ async def add_expense(
 
 
 @mcp.tool
-async def get_expense_summary(last_n: int = 5) -> str:
+async def get_expense_summary(user_id: str, last_n: int = 5) -> str:
     """Get a summary of recent expenses.
 
     Args:
+        user_id: The user's unique identifier (Telegram user ID). Always pass this.
         last_n: Number of recent expenses to summarize (default 5)
     """
     async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{API_BASE_URL}/summary", params={"last_n": last_n}, timeout=10)
+        resp = await client.get(
+            f"{API_BASE_URL}/summary",
+            params={"user_id": user_id, "last_n": last_n},
+            timeout=10,
+        )
 
     if resp.status_code != 200:
         return f"Failed to get summary: {resp.text}"

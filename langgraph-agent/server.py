@@ -1,54 +1,19 @@
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 
 load_dotenv()
 
-SYSTEM_PROMPT = """\
-You are a personal expense tracking assistant. You help the user log expenses and review their spending.
-
-## Tools Available
-- **add_expense**: Log a new expense
-- **get_expense_summary**: View recent spending summary
-
-## Behavior
-
-When the user mentions spending money or buying something:
-1. Extract: amount, category, date, payment method, comment, and whether to split
-2. If amount or category is unclear, ask before logging
-3. Call add_expense with the extracted details
-4. Confirm what was added in a short, friendly message
-
-When the user asks about their spending:
-1. Call get_expense_summary with an appropriate last_n value
-2. Present the summary in a clean, readable format
-
-## Field Guidelines
-- **category**: Map to one of: food, groceries, transport, shopping, subscriptions, recharge, rent, utilities, entertainment, health, travel, other
-- **date**: Use format like "6 February". If not mentioned, leave blank (defaults to today)
-- **payment_method**: Common values: upi, cash, rupay credit card, axis select, hdfc cc. If not mentioned, leave blank
-- **split_with**: Person's name if splitting, otherwise "none"
-- **comment**: Brief note about what the expense was for
-
-## Examples
-
-User: "spent 300 on lunch at magnolia bakery, split with mishra"
-→ add_expense(amount=300, category="food", comment="magnolia bakery", split_with="mishra")
-
-User: "paid 1500 for uber to airport using axis select"
-→ add_expense(amount=1500, category="transport", comment="uber to airport", payment_method="axis select")
-
-User: "how much did I spend recently?"
-→ get_expense_summary(last_n=10)
-
-## Tone
-Be concise and conversational. Use ₹ for amounts. Don't over-explain."""
+SYSTEM_PROMPT = (Path(__file__).parent / "agent-goal.md").read_text()
 
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8001/mcp/")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
@@ -79,10 +44,12 @@ async def lifespan(app: FastAPI):
     # IMPORTANT: await get_tools() (no context manager)
     tools = await mcp_client_instance.get_tools()
 
+    memory = MemorySaver()
     agent_executor = create_react_agent(
         llm,
         tools,
-        prompt=SYSTEM_PROMPT
+        prompt=SYSTEM_PROMPT,
+        checkpointer=memory,
     )
 
     print(f"Agent ready with {len(tools)} tools: {[t.name for t in tools]}")
@@ -98,12 +65,19 @@ app = FastAPI(title="Expense Tracker Agent", lifespan=lifespan)
 
 @app.post("/api/v1/run/{flow_id}")
 async def run_flow(flow_id: str, request: Request):
-    """Langflow-compatible endpoint — Telegram bot works without changes."""
+    """Langflow-compatible endpoint — Telegram bot calls this."""
     body = await request.json()
     input_value = body.get("input_value", "")
+    user_id = body.get("user_id", "")
+    session_id = body.get("session_id", user_id or "default")
+
+    # Prefix user_id and today's date so the agent can use them
+    today = datetime.now().strftime("%-d %B %Y")
+    message_content = f"[user_id: {user_id}] [today: {today}] {input_value}" if user_id else input_value
 
     result = await agent_executor.ainvoke(
-        {"messages": [HumanMessage(content=input_value)]}
+        {"messages": [HumanMessage(content=message_content)]},
+        config={"configurable": {"thread_id": session_id}},
     )
 
     response_text = result["messages"][-1].content
@@ -129,9 +103,15 @@ async def run_simple(request: Request):
     """Simpler endpoint for direct use."""
     body = await request.json()
     input_value = body.get("input_value", "")
+    user_id = body.get("user_id", "")
+    session_id = body.get("session_id", user_id or "default")
+
+    today = datetime.now().strftime("%-d %B %Y")
+    message_content = f"[user_id: {user_id}] [today: {today}] {input_value}" if user_id else input_value
 
     result = await agent_executor.ainvoke(
-        {"messages": [HumanMessage(content=input_value)]}
+        {"messages": [HumanMessage(content=message_content)]},
+        config={"configurable": {"thread_id": session_id}},
     )
 
     return {"response": result["messages"][-1].content}
