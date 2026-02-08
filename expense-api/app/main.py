@@ -28,7 +28,7 @@ def register(req: UserRegistrationRequest):
     try:
         # Write header row to the sheet if missing
         sheets_client.ensure_headers(req.spreadsheet_id, req.sheet_name)
-        register_user(req.telegram_user_id, req.spreadsheet_id, req.sheet_name)
+        register_user(req.telegram_user_id, req.spreadsheet_id, req.sheet_name, req.name)
         return UserRegistrationResponse(
             status="success",
             message=f"User {req.telegram_user_id} registered with spreadsheet {req.spreadsheet_id}",

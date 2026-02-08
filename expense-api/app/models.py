@@ -35,6 +35,7 @@ class SummaryResponse(BaseModel):
 
 class UserRegistrationRequest(BaseModel):
     telegram_user_id: str = Field(..., description="Telegram user ID")
+    name: str = Field("", description="User's display name")
     spreadsheet_id: str = Field(..., description="Google Sheets spreadsheet ID")
     sheet_name: str = Field("Sheet1", description="Sheet name within the spreadsheet")
 

@@ -1,0 +1,96 @@
+@startuml phase3-flow
+title **Phase 3: Multi-Modal Input**
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam roundcorner 12
+skinparam defaultFontName Arial
+skinparam nodesep 60
+skinparam ranksep 50
+
+skinparam rectangle {
+  BackgroundColor #F0F4FF
+  BorderColor #4A6FA5
+  FontSize 13
+  Padding 15
+}
+
+skinparam cloud {
+  BackgroundColor #E8F5E9
+  BorderColor #388E3C
+  Padding 15
+}
+
+skinparam database {
+  BackgroundColor #FFF3E0
+  BorderColor #E65100
+}
+
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #F9A825
+  FontSize 11
+}
+
+skinparam arrow {
+  Color #4A6FA5
+  FontSize 11
+}
+
+actor "  Telegram\n  User  " as user
+
+rectangle "  Telegram Bot  " as bot {
+  rectangle "  Text  " as text
+  rectangle "  Voice  " as voice
+  rectangle "  Photo  " as photo
+}
+
+rectangle "  Faster Whisper\n  (Local STT)  " as whisper
+
+rectangle "  Claude Vision\n  (Haiku)  " as vision
+
+rectangle "  LangGraph Agent\n  (Claude Haiku)  " as agent
+
+rectangle "  Custom MCP Server\n  (FastMCP)  " as mcp
+
+rectangle "  Expense API\n  (FastAPI)  " as api
+
+database "  SQLite\n  (Users)  " as db
+
+cloud "  Google Workspace  " {
+  rectangle "  Google Sheets\n  (Per-user)  " as gsheet
+}
+
+user -down-> bot : "  Text / Voice / Photo  "
+
+text -down-> agent : "  Raw text  "
+voice -right-> whisper
+whisper -down-> agent : "  Transcribed text  "
+photo -left-> vision
+vision -down-> agent : "  Extracted expense\n  (items, total, merchant)  "
+
+agent -down-> mcp : "  Streamable HTTP\n  (add_expense,\n  get_expense_summary)  "
+
+mcp -down-> api : "  REST API  "
+
+api -down-> db : "  User lookup  "
+api -down-> gsheet : "  Sheets API\n  (Service Account)  "
+
+note right of whisper
+  Local transcription,
+  no external API calls
+end note
+
+note left of vision
+  Claude Vision extracts
+  structured data from
+  receipt photos
+end note
+
+note right of agent
+  All three input modes
+  converge here — same
+  pipeline from Phase 2
+end note
+
+@enduml

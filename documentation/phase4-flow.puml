@@ -1,0 +1,95 @@
+@startuml phase4-flow
+title **Phase 4: Releasing It — Making It Work for Anyone**
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam roundcorner 12
+skinparam defaultFontName Arial
+skinparam nodesep 60
+skinparam ranksep 50
+
+skinparam rectangle {
+  BackgroundColor #F0F4FF
+  BorderColor #4A6FA5
+  FontSize 13
+  Padding 15
+}
+
+skinparam cloud {
+  BackgroundColor #E8F5E9
+  BorderColor #388E3C
+  Padding 15
+}
+
+skinparam database {
+  BackgroundColor #FFF3E0
+  BorderColor #E65100
+}
+
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #F9A825
+  FontSize 11
+}
+
+skinparam arrow {
+  Color #4A6FA5
+  FontSize 11
+}
+
+actor "  User A  " as userA
+actor "  User B  " as userB
+actor "  User C  " as userC
+
+rectangle "  Telegram Bot  " as bot {
+  rectangle "  /setup <spreadsheet_id>  " as setup
+  rectangle "  Text / Voice / Photo  " as input
+  rectangle "  Daily Summary  " as summary
+  rectangle "  Expense Reminders  " as reminder
+}
+
+rectangle "  LangGraph Agent\n  (Claude Haiku)  " as agent
+
+rectangle "  Custom MCP Server  " as mcp
+
+rectangle "  Expense API  " as api
+
+database "  SQLite\n  (User Registry)  " as db
+
+cloud "  Google Workspace  " {
+  rectangle "  User A's\n  Google Sheet  " as sheetA
+  rectangle "  User B's\n  Google Sheet  " as sheetB
+  rectangle "  User C's\n  Google Sheet  " as sheetC
+}
+
+userA -down-> bot
+userB -down-> bot
+userC -down-> bot
+
+setup -down-> api : "  Register user +\n  link spreadsheet  "
+input -down-> agent : "  Expense input  "
+summary -up-> userA : "  Monthly overview  "
+summary -up-> userB
+reminder -up-> userC : "  \"Don't forget to\n  log expenses!\"  "
+
+agent -down-> mcp
+mcp -down-> api
+
+api -down-> db : "  Lookup user's\n  spreadsheet  "
+api -down-> sheetA
+api -down-> sheetB
+api -down-> sheetC
+
+note right of setup
+  Onboarding:
+  1. Share sheet with service account
+  2. Run /setup <spreadsheet_id>
+end note
+
+note right of db
+  Maps each user to
+  their own Google Sheet —
+  full data isolation
+end note
+
+@enduml

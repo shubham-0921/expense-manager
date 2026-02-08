@@ -18,24 +18,31 @@ def init_db():
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             telegram_user_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL DEFAULT '',
             spreadsheet_id TEXT NOT NULL,
             sheet_name TEXT NOT NULL DEFAULT 'Sheet1',
             registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Migrate existing databases: add name column if missing
+    cursor = conn.execute("PRAGMA table_info(users)")
+    columns = {row[1] for row in cursor.fetchall()}
+    if "name" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN name TEXT NOT NULL DEFAULT ''")
     conn.commit()
     conn.close()
 
 
-def register_user(telegram_user_id: str, spreadsheet_id: str, sheet_name: str = "Sheet1"):
+def register_user(telegram_user_id: str, spreadsheet_id: str, sheet_name: str = "Sheet1", name: str = ""):
     conn = get_connection()
     conn.execute(
-        """INSERT INTO users (telegram_user_id, spreadsheet_id, sheet_name)
-           VALUES (?, ?, ?)
+        """INSERT INTO users (telegram_user_id, name, spreadsheet_id, sheet_name)
+           VALUES (?, ?, ?, ?)
            ON CONFLICT(telegram_user_id)
-           DO UPDATE SET spreadsheet_id = excluded.spreadsheet_id,
+           DO UPDATE SET name = excluded.name,
+                         spreadsheet_id = excluded.spreadsheet_id,
                          sheet_name = excluded.sheet_name""",
-        (telegram_user_id, spreadsheet_id, sheet_name),
+        (telegram_user_id, name, spreadsheet_id, sheet_name),
     )
     conn.commit()
     conn.close()

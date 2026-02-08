@@ -1,0 +1,71 @@
+@startuml phase1-flow
+title **Phase 1: Off-the-shelf MCP Servers**
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam roundcorner 12
+skinparam defaultFontName Arial
+skinparam nodesep 60
+skinparam ranksep 50
+
+skinparam rectangle {
+  BackgroundColor #F0F4FF
+  BorderColor #4A6FA5
+  FontSize 13
+  Padding 15
+}
+
+skinparam cloud {
+  BackgroundColor #E8F5E9
+  BorderColor #388E3C
+  Padding 15
+}
+
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #F9A825
+  FontSize 11
+}
+
+skinparam arrow {
+  Color #4A6FA5
+  FontSize 11
+}
+
+actor "  User  " as user
+
+rectangle "  Langflow\n  Orchestration  " as langflow
+
+rectangle "  GCP VM  " as vm {
+  rectangle "  Docker  " {
+    rectangle "  google-sheets-mcp-server\n  (xing5/mcp-google-sheets)  " as mcp
+  }
+}
+
+cloud "  Google Workspace  " {
+  rectangle "  Google Sheets\n  (Expense Tracker)  " as gsheet
+}
+
+user -down-> langflow : "  \"Spent ₹500\n  on groceries\"  "
+langflow -down-> mcp : "  Streamable HTTP  "
+mcp -down-> gsheet : "  Sheets API\n  (via Service Account)  "
+
+note right of langflow
+  Accepts natural language input,
+  connects to MCP server, and
+  orchestrates expense logging
+end note
+
+note right of mcp
+  Dockerised MCP server exposing
+  tools: read, write, update, append
+  rows to Google Sheets
+end note
+
+note right of gsheet
+  Tabular expense storage
+  + built-in charts for
+  visualisation
+end note
+
+@enduml

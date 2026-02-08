@@ -1,6 +1,8 @@
 import base64
+import datetime
 import logging
 import os
+import random
 import tempfile
 import uuid
 from pathlib import Path
@@ -30,6 +32,31 @@ EXPENSE_API_URL = os.environ.get("EXPENSE_API_URL", "http://localhost:8000")
 # Service account email to display in /setup instructions
 SERVICE_ACCOUNT_EMAIL = os.environ.get("SERVICE_ACCOUNT_EMAIL", "")
 
+# Daily summary time (hour, minute) in UTC
+DAILY_SUMMARY_HOUR = int(os.environ.get("DAILY_SUMMARY_HOUR", "14"))  # 14 UTC = 7:30 PM IST
+DAILY_SUMMARY_MINUTE = int(os.environ.get("DAILY_SUMMARY_MINUTE", "30"))
+
+# Track users who opted in for daily summaries: {user_id: chat_id}
+summary_subscribers: dict[int, int] = {}
+
+# Expense reminder settings
+REMINDER_INTERVAL_HOURS = int(os.environ.get("REMINDER_INTERVAL_HOURS", "2"))
+REMINDER_START_HOUR_UTC = int(os.environ.get("REMINDER_START_HOUR_UTC", "3"))   # 3 UTC = 8:30 AM IST
+REMINDER_END_HOUR_UTC = int(os.environ.get("REMINDER_END_HOUR_UTC", "16"))      # 16 UTC = 9:30 PM IST
+
+# Track users who opted in for reminders: {user_id: chat_id}
+reminder_subscribers: dict[int, int] = {}
+
+REMINDER_MESSAGES = [
+    "Had any expenses today? Drop them here before you forget!",
+    "Quick check-in: any spending to log since last time?",
+    "Bought anything recently? Send it over — text, voice, or photo!",
+    "Don't let expenses pile up! Log them while they're fresh.",
+    "Friendly nudge: any bills, meals, or purchases to track?",
+    "Keeping your expenses up to date? Send me what you've spent!",
+    "Any coffee, food, or shopping to log? I'm here when you're ready.",
+]
+
 anthropic_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 logger.info(f"Loading Whisper model '{WHISPER_MODEL}'...")
@@ -44,13 +71,14 @@ async def check_user_registered(user_id: int) -> bool:
     return resp.status_code == 200
 
 
-async def register_user(user_id: int, spreadsheet_id: str, sheet_name: str = "Sheet1") -> str:
+async def register_user(user_id: int, spreadsheet_id: str, sheet_name: str = "Sheet1", name: str = "") -> str:
     """Register a user's Google Sheet via the expense-api."""
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{EXPENSE_API_URL}/register",
             json={
                 "telegram_user_id": str(user_id),
+                "name": name,
                 "spreadsheet_id": spreadsheet_id,
                 "sheet_name": sheet_name,
             },
@@ -107,6 +135,101 @@ async def call_langflow(text: str, user_id: str) -> str:
         return str(data)
 
 
+async def fetch_monthly_summary(user_id: str) -> str | None:
+    """Fetch the current month's summary from the expense API."""
+    month = datetime.date.today().strftime("%Y-%m")
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{EXPENSE_API_URL}/summary",
+            params={"user_id": user_id, "month": month},
+            timeout=10,
+        )
+    if resp.status_code != 200:
+        return None
+    data = resp.json()
+    if data["count"] == 0:
+        return None
+    lines = [f"Daily Summary ({datetime.date.today().strftime('%d %b %Y')})"]
+    lines.append(f"This month: {data['count']} expenses, total: {data['total']}")
+    if data.get("by_category"):
+        lines.append("\nBy category:")
+        for cat, amt in sorted(data["by_category"].items(), key=lambda x: x[1], reverse=True):
+            lines.append(f"  {cat}: {amt}")
+    return "\n".join(lines)
+
+
+async def send_daily_summary(context: ContextTypes.DEFAULT_TYPE):
+    """Job callback: send daily summary to all subscribers."""
+    for user_id, chat_id in summary_subscribers.items():
+        try:
+            summary = await fetch_monthly_summary(str(user_id))
+            if summary:
+                await context.bot.send_message(chat_id=chat_id, text=summary)
+        except Exception as e:
+            logger.error(f"Failed to send daily summary to {user_id}: {e}")
+
+
+async def send_expense_reminder(context: ContextTypes.DEFAULT_TYPE):
+    """Job callback: send periodic expense reminders to subscribers."""
+    now_utc = datetime.datetime.now(datetime.timezone.utc).hour
+    if not (REMINDER_START_HOUR_UTC <= now_utc < REMINDER_END_HOUR_UTC):
+        return
+    for user_id, chat_id in reminder_subscribers.items():
+        try:
+            msg = random.choice(REMINDER_MESSAGES)
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+        except Exception as e:
+            logger.error(f"Failed to send reminder to {user_id}: {e}")
+
+
+async def remind_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /remind_on — opt in to periodic expense reminders."""
+    user_id = update.effective_user.id
+    if not await check_user_registered(user_id):
+        await update.message.reply_text("You need to /setup first before enabling reminders.")
+        return
+    reminder_subscribers[user_id] = update.effective_chat.id
+    await update.message.reply_text(
+        f"Reminders enabled! I'll nudge you every {REMINDER_INTERVAL_HOURS}h "
+        f"between {REMINDER_START_HOUR_UTC:02d}:00–{REMINDER_END_HOUR_UTC:02d}:00 UTC to log expenses.\n"
+        "Use /remind_off to disable."
+    )
+    await update.message.reply_text(random.choice(REMINDER_MESSAGES))
+
+
+async def remind_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /remind_off — opt out of periodic reminders."""
+    user_id = update.effective_user.id
+    reminder_subscribers.pop(user_id, None)
+    await update.message.reply_text("Reminders disabled.")
+
+
+async def summary_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /summary_on — opt in to daily summaries."""
+    user_id = update.effective_user.id
+    if not await check_user_registered(user_id):
+        await update.message.reply_text("You need to /setup first before enabling daily summaries.")
+        return
+    summary_subscribers[user_id] = update.effective_chat.id
+    await update.message.reply_text(
+        f"Daily summary enabled! You'll receive a spending summary every day at "
+        f"{DAILY_SUMMARY_HOUR:02d}:{DAILY_SUMMARY_MINUTE:02d} UTC.\n"
+        "Use /summary_off to disable."
+    )
+    summary = await fetch_monthly_summary(str(user_id))
+    if summary:
+        await update.message.reply_text(summary)
+    else:
+        await update.message.reply_text("No expenses logged this month yet. Start tracking!")
+
+
+async def summary_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /summary_off — opt out of daily summaries."""
+    user_id = update.effective_user.id
+    summary_subscribers.pop(user_id, None)
+    await update.message.reply_text("Daily summary disabled.")
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     share_instruction = ""
     if SERVICE_ACCOUNT_EMAIL:
@@ -146,10 +269,12 @@ async def setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     spreadsheet_id = context.args[0]
     sheet_name = context.args[1] if len(context.args) > 1 else "Sheet1"
     user_id = update.effective_user.id
+    user = update.effective_user
+    name = " ".join(filter(None, [user.first_name, user.last_name]))
 
     await update.message.chat.send_action("typing")
 
-    result = await register_user(user_id, spreadsheet_id, sheet_name)
+    result = await register_user(user_id, spreadsheet_id, sheet_name, name)
 
     if result == "success":
         share_msg = ""
@@ -333,9 +458,22 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("setup", setup))
+    app.add_handler(CommandHandler("summary_on", summary_on))
+    app.add_handler(CommandHandler("summary_off", summary_off))
+    app.add_handler(CommandHandler("remind_on", remind_on))
+    app.add_handler(CommandHandler("remind_off", remind_off))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+    # Schedule daily summary job
+    summary_time = datetime.time(hour=DAILY_SUMMARY_HOUR, minute=DAILY_SUMMARY_MINUTE)
+    app.job_queue.run_daily(send_daily_summary, time=summary_time)
+    logger.info(f"Daily summary scheduled at {summary_time} UTC")
+
+    # Schedule periodic expense reminders
+    app.job_queue.run_repeating(send_expense_reminder, interval=REMINDER_INTERVAL_HOURS * 3600)
+    logger.info(f"Expense reminders scheduled every {REMINDER_INTERVAL_HOURS}h ({REMINDER_START_HOUR_UTC:02d}:00–{REMINDER_END_HOUR_UTC:02d}:00 UTC)")
 
     logger.info("Bot started. Polling for messages...")
     app.run_polling()

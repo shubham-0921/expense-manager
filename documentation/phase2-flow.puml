@@ -1,0 +1,84 @@
+@startuml phase2-flow
+title **Phase 2: Custom MCP Server**
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam roundcorner 12
+skinparam defaultFontName Arial
+skinparam nodesep 60
+skinparam ranksep 50
+
+skinparam rectangle {
+  BackgroundColor #F0F4FF
+  BorderColor #4A6FA5
+  FontSize 13
+  Padding 15
+}
+
+skinparam cloud {
+  BackgroundColor #E8F5E9
+  BorderColor #388E3C
+  Padding 15
+}
+
+skinparam database {
+  BackgroundColor #FFF3E0
+  BorderColor #E65100
+}
+
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #F9A825
+  FontSize 11
+}
+
+skinparam arrow {
+  Color #4A6FA5
+  FontSize 11
+}
+
+actor "  User  " as user
+
+rectangle "  Telegram Bot  " as bot
+
+rectangle "  LangGraph Agent\n  (Claude Haiku)  " as agent
+
+rectangle "  Custom MCP Server\n  (FastMCP)  " as mcp
+
+rectangle "  Expense API\n  (FastAPI)  " as api
+
+database "  SQLite\n  (Users)  " as db
+
+cloud "  Google Workspace  " {
+  rectangle "  Google Sheets\n  (Per-user)  " as gsheet
+}
+
+user -down-> bot : "  \"Spent ₹500\n  on groceries\"  "
+bot -down-> agent : "  Text message  "
+
+agent -down-> mcp : "  Streamable HTTP\n  (add_expense,\n  get_expense_summary)  "
+
+mcp -down-> api : "  REST API  "
+
+api -down-> db : "  User lookup  "
+api -down-> gsheet : "  Sheets API\n  (Service Account)  "
+
+note right of agent
+  ReAct agent: only parses
+  natural language into
+  structured expense data
+end note
+
+note right of mcp
+  Two focused tools replace
+  the dozen generic ones
+  from Phase 1
+end note
+
+note left of api
+  Handles all business logic:
+  user registration, date parsing,
+  category aggregation
+end note
+
+@enduml
