@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "splitwise-mcp-server"
+version = "0.1.0"
+description = "Model Context Protocol server for Splitwise API integration with natural language entity resolution"
+readme = {file = "README.md", content-type = "text/markdown"}
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    {name = "Splitwise MCP Server Contributors"}
+]
+maintainers = [
+    {name = "Splitwise MCP Server Contributors"}
+]
+keywords = [
+    "mcp",
+    "splitwise",
+    "model-context-protocol",
+    "expense-management",
+    "ai-agent",
+    "fastmcp",
+    "expense-tracking",
+    "natural-language",
+    "fuzzy-matching"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Communications",
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    "fastmcp>=0.1.0",
+    "httpx>=0.27.0",
+    "rapidfuzz>=3.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "httpx-mock>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/splitwise-mcp-server"
+Documentation = "https://github.com/yourusername/splitwise-mcp-server#readme"
+Repository = "https://github.com/yourusername/splitwise-mcp-server"
+Issues = "https://github.com/yourusername/splitwise-mcp-server/issues"
+
+[project.scripts]
+splitwise-mcp-server = "splitwise_mcp_server.__main__:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["splitwise_mcp_server*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+splitwise_mcp_server = ["templates/*.html"]

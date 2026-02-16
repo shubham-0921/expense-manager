@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 
-from app.database import init_db, register_user, get_user
+from app.database import init_db, register_user, get_user, set_splitwise_token, get_splitwise_token
 from app.models import (
     ExpenseRequest, ExpenseResponse,
     SummaryResponse,
@@ -43,6 +43,39 @@ def get_user_info(telegram_user_id: str):
     if user is None:
         raise HTTPException(status_code=404, detail="User not registered")
     return user
+
+
+@app.post("/splitwise-token")
+def save_splitwise_token(req: dict):
+    """Store a user's Splitwise MCP token."""
+    telegram_user_id = req.get("telegram_user_id")
+    token = req.get("splitwise_token")
+    if not telegram_user_id or not token:
+        raise HTTPException(status_code=400, detail="telegram_user_id and splitwise_token required")
+    user = get_user(telegram_user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not registered")
+    set_splitwise_token(telegram_user_id, token)
+    return {"status": "success", "message": "Splitwise token saved"}
+
+
+@app.get("/splitwise-token/{telegram_user_id}")
+def get_splitwise_token_endpoint(telegram_user_id: str):
+    """Get a user's Splitwise MCP token."""
+    token = get_splitwise_token(telegram_user_id)
+    if not token:
+        raise HTTPException(status_code=404, detail="No Splitwise token found")
+    return {"splitwise_token": token}
+
+
+@app.delete("/splitwise-token/{telegram_user_id}")
+def delete_splitwise_token(telegram_user_id: str):
+    """Remove a user's Splitwise MCP token."""
+    user = get_user(telegram_user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not registered")
+    set_splitwise_token(telegram_user_id, "")
+    return {"status": "success", "message": "Splitwise token removed"}
 
 
 @app.post("/expense", response_model=ExpenseResponse)

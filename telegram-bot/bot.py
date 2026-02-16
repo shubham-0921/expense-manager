@@ -32,6 +32,9 @@ EXPENSE_API_URL = os.environ.get("EXPENSE_API_URL", "http://localhost:8000")
 # Service account email to display in /setup instructions
 SERVICE_ACCOUNT_EMAIL = os.environ.get("SERVICE_ACCOUNT_EMAIL", "")
 
+# Splitwise MCP server URL (for OAuth link)
+SPLITWISE_MCP_URL = os.environ.get("SPLITWISE_MCP_URL", "")
+
 # Daily summary time (hour, minute) in UTC
 DAILY_SUMMARY_HOUR = int(os.environ.get("DAILY_SUMMARY_HOUR", "14"))  # 14 UTC = 7:30 PM IST
 DAILY_SUMMARY_MINUTE = int(os.environ.get("DAILY_SUMMARY_MINUTE", "30"))
@@ -67,7 +70,7 @@ logger.info("Whisper model loaded.")
 async def check_user_registered(user_id: int) -> bool:
     """Check if a user is registered by calling the expense-api."""
     async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{EXPENSE_API_URL}/user/{user_id}", timeout=5)
+        resp = await client.get(f"{EXPENSE_API_URL}/user/{user_id}", timeout=30)
     return resp.status_code == 200
 
 
@@ -82,7 +85,7 @@ async def register_user(user_id: int, spreadsheet_id: str, sheet_name: str = "Sh
                 "spreadsheet_id": spreadsheet_id,
                 "sheet_name": sheet_name,
             },
-            timeout=5,
+            timeout=30,
         )
     if resp.status_code == 200:
         return "success"
@@ -103,10 +106,25 @@ def get_session_id(user_id: str) -> str:
     return user_sessions[user_id]["session_id"]
 
 
+async def get_user_splitwise_token(user_id: str) -> str:
+    """Fetch the user's Splitwise MCP token from the expense API."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{EXPENSE_API_URL}/splitwise-token/{user_id}", timeout=10)
+        if resp.status_code == 200:
+            return resp.json().get("splitwise_token", "")
+    except Exception:
+        pass
+    return ""
+
+
 async def call_langflow(text: str, user_id: str) -> str:
     headers = {"Content-Type": "application/json"}
     if LANGFLOW_API_KEY:
         headers["x-api-key"] = LANGFLOW_API_KEY
+
+    # Fetch Splitwise token if available
+    splitwise_token = await get_user_splitwise_token(user_id)
 
     payload = {
         "input_value": text,
@@ -114,10 +132,11 @@ async def call_langflow(text: str, user_id: str) -> str:
         "input_type": "chat",
         "session_id": get_session_id(user_id),
         "user_id": user_id,
+        "splitwise_token": splitwise_token,
     }
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(LANGFLOW_API_URL, json=payload, headers=headers, timeout=30)
+        resp = await client.post(LANGFLOW_API_URL, json=payload, headers=headers, timeout=60)
 
     if resp.status_code != 200:
         logger.error(f"Langflow error: {resp.status_code} {resp.text}")
@@ -142,7 +161,7 @@ async def fetch_monthly_summary(user_id: str) -> str | None:
         resp = await client.get(
             f"{EXPENSE_API_URL}/summary",
             params={"user_id": user_id, "month": month},
-            timeout=10,
+            timeout=20,
         )
     if resp.status_code != 200:
         return None
@@ -230,6 +249,74 @@ async def summary_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Daily summary disabled.")
 
 
+async def connect_splitwise(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /connect_splitwise — start Splitwise OAuth flow."""
+    user_id = update.effective_user.id
+    if not await check_user_registered(user_id):
+        await update.message.reply_text("You need to /setup first before connecting Splitwise.")
+        return
+    if not SPLITWISE_MCP_URL:
+        await update.message.reply_text("Splitwise integration is not configured on this server.")
+        return
+
+    authorize_url = f"{SPLITWISE_MCP_URL}/authorize"
+    await update.message.reply_text(
+        "To connect your Splitwise account:\n\n"
+        f"1. Open this link: {authorize_url}\n"
+        "2. Authorize the app on Splitwise\n"
+        "3. You'll see a success page with your personal MCP URL\n"
+        "4. Copy the token from the URL (the part after ?token=)\n"
+        "5. Send it back here with:\n"
+        "   /splitwise_token <your-token>\n\n"
+        "Example:\n"
+        "/splitwise_token a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    )
+
+
+async def set_splitwise_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /splitwise_token <uuid> — save user's Splitwise token."""
+    user_id = update.effective_user.id
+    if not await check_user_registered(user_id):
+        await update.message.reply_text("You need to /setup first.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /splitwise_token <your-token-uuid>")
+        return
+
+    token = context.args[0].strip()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{EXPENSE_API_URL}/splitwise-token",
+            json={"telegram_user_id": str(user_id), "splitwise_token": token},
+            timeout=30,
+        )
+
+    if resp.status_code == 200:
+        await update.message.reply_text(
+            "Splitwise connected!\n\n"
+            "You can now use Splitwise features, like:\n"
+            '  "show my Splitwise groups"\n'
+            '  "add a 500 dinner split with John on Splitwise"\n'
+            '  "what do I owe on Splitwise?"'
+        )
+    else:
+        await update.message.reply_text(f"Failed to save token: {resp.text}")
+
+
+async def disconnect_splitwise(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /disconnect_splitwise — remove Splitwise token."""
+    user_id = update.effective_user.id
+    async with httpx.AsyncClient() as client:
+        resp = await client.delete(f"{EXPENSE_API_URL}/splitwise-token/{user_id}", timeout=30)
+
+    if resp.status_code == 200:
+        await update.message.reply_text("Splitwise disconnected.")
+    else:
+        await update.message.reply_text("No Splitwise connection found.")
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     share_instruction = ""
     if SERVICE_ACCOUNT_EMAIL:
@@ -238,35 +325,57 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         share_instruction = "\n2. Share it with the bot's service account email (ask the admin)\n3."
 
     await update.message.reply_text(
-        "Hey! I'm your expense tracker bot.\n\n"
+        "Hey! I'm Expense Manager — your personal expense tracking assistant.\n\n"
+        "I help you manage your expenses in natural language using Text, Voice, or Photos. "
+        "All your data lives in your own Google Sheet. Only the service account has access "
+        "to your sheet — not even the person who built me can see it.\n\n"
         "To get started:\n"
         "1. Create a Google Sheet for your expenses"
-        f"{share_instruction} Run /setup <your-spreadsheet-id>\n\n"
-        "Your spreadsheet ID is the long string in the Google Sheets URL:\n"
-        "docs.google.com/spreadsheets/d/<THIS-PART>/edit\n\n"
+        f"{share_instruction} Run /setup <your-google-sheet-link>\n\n"
+        "Just paste the full link from your browser, e.g.:\n"
+        "/setup https://docs.google.com/spreadsheets/d/1BxiMVs.../edit\n\n"
         "Once set up, send me expenses like:\n"
         '  "spent 300 on lunch at swiggy"\n'
         '  "paid 1500 for uber using axis select"\n\n'
         "Or send a voice message or a photo of a receipt/bill!\n\n"
         "Or ask:\n"
         '  "how much did I spend recently?"\n'
-        '  "show my summary"'
+        '  "show my summary"\n\n'
+        "Splitwise integration:\n"
+        "  /connect_splitwise — link your Splitwise account\n"
+        "  /disconnect_splitwise — unlink Splitwise"
     )
 
 
+def extract_spreadsheet_id(input_str: str) -> str | None:
+    """Extract spreadsheet ID from a Google Sheets URL or return the raw ID."""
+    import re
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", input_str)
+    if match:
+        return match.group(1)
+    # If it looks like a raw ID (alphanumeric, hyphens, underscores), return as-is
+    if re.fullmatch(r"[a-zA-Z0-9_-]+", input_str):
+        return input_str
+    return None
+
+
 async def setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /setup <spreadsheet_id> [sheet_name] command."""
+    """Handle /setup <spreadsheet-url-or-id> [sheet-name] command."""
     if not context.args:
         await update.message.reply_text(
-            "Usage: /setup <spreadsheet-id> [sheet-name]\n\n"
-            "Example: /setup 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms\n"
-            "Example: /setup 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms MyExpenses\n\n"
-            "Your spreadsheet ID is the long string in the URL:\n"
-            "docs.google.com/spreadsheets/d/<THIS-PART>/edit"
+            "Usage: /setup <google-sheet-link> [sheet-name]\n\n"
+            "Example: /setup https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms/edit\n"
+            "Example: /setup https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms/edit MyExpenses"
         )
         return
 
-    spreadsheet_id = context.args[0]
+    spreadsheet_id = extract_spreadsheet_id(context.args[0])
+    if not spreadsheet_id:
+        await update.message.reply_text(
+            "That doesn't look like a valid Google Sheet link or ID. "
+            "Please paste the full URL from your browser's address bar."
+        )
+        return
     sheet_name = context.args[1] if len(context.args) > 1 else "Sheet1"
     user_id = update.effective_user.id
     user = update.effective_user
@@ -286,6 +395,14 @@ async def setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Try sending an expense like:\n"
             '  "spent 300 on lunch at swiggy"'
         )
+
+        # Send and pin the Google Sheet link for easy access
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
+        link_msg = await update.message.reply_text(f"Your expense sheet:\n{sheet_url}")
+        try:
+            await link_msg.pin(disable_notification=True)
+        except Exception as e:
+            logger.warning(f"Could not pin sheet link: {e}")
     else:
         await update.message.reply_text(f"Registration failed: {result}\nPlease try again.")
 
@@ -462,6 +579,9 @@ def main():
     app.add_handler(CommandHandler("summary_off", summary_off))
     app.add_handler(CommandHandler("remind_on", remind_on))
     app.add_handler(CommandHandler("remind_off", remind_off))
+    app.add_handler(CommandHandler("connect_splitwise", connect_splitwise))
+    app.add_handler(CommandHandler("splitwise_token", set_splitwise_token_cmd))
+    app.add_handler(CommandHandler("disconnect_splitwise", disconnect_splitwise))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
@@ -474,6 +594,28 @@ def main():
     # Schedule periodic expense reminders
     app.job_queue.run_repeating(send_expense_reminder, interval=REMINDER_INTERVAL_HOURS * 3600)
     logger.info(f"Expense reminders scheduled every {REMINDER_INTERVAL_HOURS}h ({REMINDER_START_HOUR_UTC:02d}:00–{REMINDER_END_HOUR_UTC:02d}:00 UTC)")
+
+    async def post_init(application):
+        await application.bot.set_my_commands([
+            ("start", "Get started with the bot"),
+            ("setup", "Link your Google Sheet"),
+            ("connect_splitwise", "Connect your Splitwise account"),
+            ("splitwise_token", "Save your Splitwise token"),
+            ("disconnect_splitwise", "Unlink Splitwise"),
+            ("summary_on", "Enable daily spending summary"),
+            ("summary_off", "Disable daily summary"),
+            ("remind_on", "Enable expense reminders"),
+            ("remind_off", "Disable reminders"),
+        ])
+        await application.bot.set_my_description(
+            "I'm Expense Manager — your personal expense tracking assistant. "
+            "I help you manage your expenses in natural language using Text, Voice, or Photos. "
+            "All your data lives in your own Google Sheet. Only the service account has access "
+            "to your sheet — not even the person who built me can see it.\n\n"
+            "Tap START to get going!"
+        )
+
+    app.post_init = post_init
 
     logger.info("Bot started. Polling for messages...")
     app.run_polling()

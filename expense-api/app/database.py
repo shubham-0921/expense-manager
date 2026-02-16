@@ -24,11 +24,13 @@ def init_db():
             registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    # Migrate existing databases: add name column if missing
+    # Migrate existing databases: add missing columns
     cursor = conn.execute("PRAGMA table_info(users)")
     columns = {row[1] for row in cursor.fetchall()}
     if "name" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+    if "splitwise_token" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN splitwise_token TEXT DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -46,6 +48,28 @@ def register_user(telegram_user_id: str, spreadsheet_id: str, sheet_name: str = 
     )
     conn.commit()
     conn.close()
+
+
+def set_splitwise_token(telegram_user_id: str, splitwise_token: str):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE users SET splitwise_token = ? WHERE telegram_user_id = ?",
+        (splitwise_token, telegram_user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_splitwise_token(telegram_user_id: str) -> str:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT splitwise_token FROM users WHERE telegram_user_id = ?",
+        (telegram_user_id,),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return ""
+    return row[0] or ""
 
 
 def get_user(telegram_user_id: str) -> dict | None:

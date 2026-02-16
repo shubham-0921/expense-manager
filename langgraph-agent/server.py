@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -13,26 +14,33 @@ from langgraph.prebuilt import create_react_agent
 
 load_dotenv()
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 SYSTEM_PROMPT = (Path(__file__).parent / "agent-goal.md").read_text()
 
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8001/mcp/")
+SPLITWISE_MCP_BASE_URL = os.getenv("SPLITWISE_MCP_BASE_URL", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME", "claude-haiku-4-5-20251001")
 
-agent_executor = None
-mcp_client_instance = None
+# Static resources (created once at startup)
+llm = None
+expense_tools = None
+memory = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global agent_executor, mcp_client_instance
+    global llm, expense_tools, memory
 
     llm = ChatAnthropic(
         model=MODEL_NAME,
-        anthropic_api_key=ANTHROPIC_API_KEY
+        anthropic_api_key=ANTHROPIC_API_KEY,
     )
 
-    mcp_client_instance = MultiServerMCPClient(
+    # Load expense-tracker tools (static, no per-user auth)
+    mcp_client = MultiServerMCPClient(
         {
             "expense-tracker-mcp-server": {
                 "url": MCP_SERVER_URL,
@@ -40,24 +48,63 @@ async def lifespan(app: FastAPI):
             }
         }
     )
-
-    # IMPORTANT: await get_tools() (no context manager)
-    tools = await mcp_client_instance.get_tools()
+    expense_tools = await mcp_client.get_tools()
 
     memory = MemorySaver()
-    agent_executor = create_react_agent(
-        llm,
-        tools,
-        prompt=SYSTEM_PROMPT,
-        checkpointer=memory,
-    )
 
-    print(f"Agent ready with {len(tools)} tools: {[t.name for t in tools]}")
+    logger.info(f"Agent ready with {len(expense_tools)} expense tools: {[t.name for t in expense_tools]}")
+    if SPLITWISE_MCP_BASE_URL:
+        logger.info(f"Splitwise MCP configured at {SPLITWISE_MCP_BASE_URL}")
 
     yield
 
-    # No cleanup needed anymore
 
+async def _run_agent(input_value: str, user_id: str, session_id: str, splitwise_token: str = "") -> str:
+    """Build the tool list, create an agent, and run the query."""
+    today = datetime.now().strftime("%-d %B %Y")
+    message_content = f"[user_id: {user_id}] [today: {today}] {input_value}" if user_id else input_value
+
+    # Always include expense-tracker tools
+    tools = list(expense_tools)
+
+    # Add Splitwise tools if user has a token and server is configured
+    # Keep sw_client reference alive so MCP sessions persist during agent execution
+    sw_client = None
+    if splitwise_token and SPLITWISE_MCP_BASE_URL:
+        try:
+            splitwise_url = f"{SPLITWISE_MCP_BASE_URL}?token={splitwise_token}"
+            sw_client = MultiServerMCPClient(
+                {
+                    "splitwise": {
+                        "url": splitwise_url,
+                        "transport": "streamable_http",
+                    }
+                }
+            )
+            sw_tools = await sw_client.get_tools()
+            tools.extend(sw_tools)
+            logger.info(f"Loaded {len(sw_tools)} Splitwise tools for user {user_id}")
+        except Exception as e:
+            logger.warning(f"Failed to load Splitwise tools for user {user_id}: {e}")
+
+    agent = create_react_agent(llm, tools, prompt=SYSTEM_PROMPT, checkpointer=memory)
+    config = {"configurable": {"thread_id": session_id}}
+
+    try:
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content=message_content)]},
+            config=config,
+        )
+    except Exception:
+        # Any error during agent execution may leave the conversation
+        # history in a corrupted state (e.g. orphaned tool_calls without
+        # ToolMessages). Clear the session so the next request starts fresh.
+        logger.exception(f"Agent error for session {session_id}, clearing history")
+        if session_id in memory.storage:
+            del memory.storage[session_id]
+        raise
+
+    return result["messages"][-1].content
 
 
 app = FastAPI(title="Expense Tracker Agent", lifespan=lifespan)
@@ -70,17 +117,9 @@ async def run_flow(flow_id: str, request: Request):
     input_value = body.get("input_value", "")
     user_id = body.get("user_id", "")
     session_id = body.get("session_id", user_id or "default")
+    splitwise_token = body.get("splitwise_token", "")
 
-    # Prefix user_id and today's date so the agent can use them
-    today = datetime.now().strftime("%-d %B %Y")
-    message_content = f"[user_id: {user_id}] [today: {today}] {input_value}" if user_id else input_value
-
-    result = await agent_executor.ainvoke(
-        {"messages": [HumanMessage(content=message_content)]},
-        config={"configurable": {"thread_id": session_id}},
-    )
-
-    response_text = result["messages"][-1].content
+    response_text = await _run_agent(input_value, user_id, session_id, splitwise_token)
 
     # Match Langflow's response format for backward compatibility
     return {
@@ -105,16 +144,10 @@ async def run_simple(request: Request):
     input_value = body.get("input_value", "")
     user_id = body.get("user_id", "")
     session_id = body.get("session_id", user_id or "default")
+    splitwise_token = body.get("splitwise_token", "")
 
-    today = datetime.now().strftime("%-d %B %Y")
-    message_content = f"[user_id: {user_id}] [today: {today}] {input_value}" if user_id else input_value
-
-    result = await agent_executor.ainvoke(
-        {"messages": [HumanMessage(content=message_content)]},
-        config={"configurable": {"thread_id": session_id}},
-    )
-
-    return {"response": result["messages"][-1].content}
+    response_text = await _run_agent(input_value, user_id, session_id, splitwise_token)
+    return {"response": response_text}
 
 
 @app.get("/health")
