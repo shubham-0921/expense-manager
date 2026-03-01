@@ -1,5 +1,6 @@
 import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -7,7 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
@@ -148,6 +149,86 @@ async def run_simple(request: Request):
 
     response_text = await _run_agent(input_value, user_id, session_id, splitwise_token)
     return {"response": response_text}
+
+
+@app.post("/eval/run")
+async def eval_run(request: Request):
+    """Eval endpoint — returns tool call trace and token usage alongside the response."""
+    body = await request.json()
+    input_value = body.get("input_value", "")
+    user_id = body.get("user_id", "99999")
+    today_str = body.get("today", datetime.now().strftime("%-d %B %Y"))
+    splitwise_token = body.get("splitwise_token", "")
+
+    # Fresh session per eval run to prevent state leaking between test cases
+    session_id = f"eval_{uuid.uuid4().hex}"
+    message_content = f"[user_id: {user_id}] [today: {today_str}] {input_value}"
+
+    tools = list(expense_tools)
+    sw_client = None
+    if splitwise_token and SPLITWISE_MCP_BASE_URL:
+        try:
+            splitwise_url = f"{SPLITWISE_MCP_BASE_URL}?token={splitwise_token}"
+            sw_client = MultiServerMCPClient(
+                {"splitwise": {"url": splitwise_url, "transport": "streamable_http"}}
+            )
+            sw_tools = await sw_client.get_tools()
+            tools.extend(sw_tools)
+        except Exception as e:
+            logger.warning(f"Failed to load Splitwise tools for eval: {e}")
+
+    agent = create_react_agent(llm, tools, prompt=SYSTEM_PROMPT, checkpointer=memory)
+    config = {"configurable": {"thread_id": session_id}}
+
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content=message_content)]},
+        config=config,
+    )
+
+    # Extract tool calls, tool results, and token usage across ALL LLM calls.
+    # A single agent request involves multiple LLM calls (e.g. one to choose the
+    # tool, another to compose the final reply) — we sum every AIMessage's usage.
+    #
+    # Message sequence in a ReAct trace:
+    #   HumanMessage → AIMessage (tool_calls) → ToolMessage → AIMessage (final reply)
+    #
+    # We need tool_call_id → name to resolve ToolMessages back to tool names.
+    tool_call_id_to_name: dict[str, str] = {}
+    tool_calls = []
+    tool_results = []
+    total_input_tokens = 0
+    total_output_tokens = 0
+    llm_call_count = 0
+    for msg in result["messages"]:
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            for tc in msg.tool_calls:
+                tool_call_id_to_name[tc["id"]] = tc["name"]
+                tool_calls.append({"name": tc["name"], "args": tc["args"]})
+        if isinstance(msg, ToolMessage):
+            name = tool_call_id_to_name.get(msg.tool_call_id, "unknown")
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            tool_results.append({"name": name, "result": content})
+        meta = getattr(msg, "usage_metadata", None)
+        if meta:
+            # usage_metadata is a TypedDict — supports both dict .get() and attribute access
+            in_tok = meta.get("input_tokens", 0) if isinstance(meta, dict) else getattr(meta, "input_tokens", 0)
+            out_tok = meta.get("output_tokens", 0) if isinstance(meta, dict) else getattr(meta, "output_tokens", 0)
+            total_input_tokens += in_tok
+            total_output_tokens += out_tok
+            llm_call_count += 1
+
+    return {
+        "response": result["messages"][-1].content,
+        "tool_calls": tool_calls,
+        "tool_results": tool_results,
+        "model": MODEL_NAME,
+        "token_usage": {
+            "input_tokens": total_input_tokens,
+            "output_tokens": total_output_tokens,
+            "total_tokens": total_input_tokens + total_output_tokens,
+            "llm_calls": llm_call_count,
+        },
+    }
 
 
 @app.get("/health")

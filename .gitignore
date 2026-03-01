@@ -6,6 +6,7 @@
 __pycache__/
 *.pyc
 *.json
+!evals/test_cases.json
 venv/
 .venv/
 data/

@@ -1,0 +1,189 @@
+[
+  {
+    "id": "tc_001",
+    "description": "Simple food expense",
+    "input": "spent 350 on lunch at Chipotle",
+    "today": "24 February 2026",
+    "user_id": "99999",
+    "assertions": {
+      "tools_called": ["add_expense"],
+      "tools_not_called": ["get_expense_summary", "create_expense"],
+      "tool_args": {
+        "add_expense": {
+          "user_id": "99999",
+          "amount": 350,
+          "category": "food",
+          "date": "24 February 2026"
+        }
+      },
+      "response_contains": ["₹350"],
+      "response_not_contains": ["user_id", "99999"],
+      "tool_result_contains": {"add_expense": "Added expense"}
+    },
+    "token_budget": 8000
+  },
+  {
+    "id": "tc_002",
+    "description": "Transport with payment method",
+    "input": "paid 850 for Rapido to office using Axis Select",
+    "today": "24 February 2026",
+    "user_id": "99999",
+    "assertions": {
+      "tools_called": ["add_expense"],
+      "tools_not_called": ["get_expense_summary"],
+      "tool_args": {
+        "add_expense": {
+          "amount": 850,
+          "category": "transport",
+          "payment_method": "axis select"
+        }
+      },
+      "response_contains": ["₹850"],
+      "tool_result_contains": {"add_expense": "Added expense"}
+    },
+    "token_budget": 8000
+  },
+  {
+    "id": "tc_003",
+    "description": "Date resolution — yesterday",
+    "input": "spent 200 on coffee yesterday",
+    "today": "24 February 2026",
+    "user_id": "99999",
+    "assertions": {
+      "tools_called": ["add_expense"],
+      "tool_args": {
+        "add_expense": {
+          "amount": 200,
+          "date": "23 February 2026"
+        }
+      },
+      "tool_result_contains": {"add_expense": "Added expense"}
+    },
+    "token_budget": 8000
+  },
+  {
+    "id": "tc_004",
+    "description": "Date resolution — last Saturday",
+    "input": "spent 1200 on groceries last Saturday",
+    "today": "24 February 2026",
+    "user_id": "99999",
+    "assertions": {
+      "tools_called": ["add_expense"],
+      "tool_args": {
+        "add_expense": {
+          "amount": 1200,
+          "category": "groceries",
+          "date": "21 February 2026"
+        }
+      },
+      "tool_result_contains": {"add_expense": "Added expense"}
+    },
+    "token_budget": 8000
+  },
+  {
+    "id": "tc_005",
+    "description": "Category inference — subscription",
+    "input": "Netflix renewal 649",
+    "today": "24 February 2026",
+    "user_id": "99999",
+    "assertions": {
+      "tools_called": ["add_expense"],
+      "tool_args": {
+        "add_expense": {
+          "amount": 649,
+          "category": "subscriptions"
+        }
+      },
+      "response_contains": ["₹649"],
+      "tool_result_contains": {"add_expense": "Added expense"}
+    },
+    "token_budget": 8000
+  },
+  {
+    "id": "tc_006",
+    "description": "Split expense flow (Splitwise)",
+    "input": "spent 800 on dinner[Test], split with Mishra",
+    "today": "24 February 2026",
+    "user_id": "99999",
+    "requires": ["splitwise"],
+    "assertions": {
+      "tools_called": ["add_expense", "resolve_friend", "create_expense"],
+      "ordered": true,
+      "tool_args": {
+        "add_expense": {
+          "amount": 800,
+          "category": "food"
+        },
+        "create_expense": {
+          "cost": "800.00",
+          "split_equally": true
+        }
+      },
+      "response_contains": ["₹800"],
+      "tool_result_contains": {"add_expense": "Added expense"}
+    },
+    "token_budget": 20000
+  },
+  {
+    "id": "tc_007",
+    "description": "Expense summary request",
+    "input": "how much did I spend this week",
+    "today": "24 February 2026",
+    "user_id": "99999",
+    "assertions": {
+      "tools_called": ["get_expense_summary"],
+      "tools_not_called": ["add_expense"],
+      "tool_result_contains": {"get_expense_summary": "expenses"}
+    },
+    "token_budget": 8000
+  },
+  {
+    "id": "tc_008",
+    "description": "Missing amount — agent should ask",
+    "input": "bought groceries from Zepto",
+    "today": "24 February 2026",
+    "user_id": "99999",
+    "assertions": {
+      "tools_not_called": ["add_expense"]
+    },
+    "token_budget": 8000
+  },
+  {
+    "id": "tc_009",
+    "description": "Category inferable — agent should NOT ask",
+    "input": "spent 500 at Big Basket",
+    "today": "24 February 2026",
+    "user_id": "99999",
+    "assertions": {
+      "tools_called": ["add_expense"],
+      "tool_args": {
+        "add_expense": {
+          "amount": 500,
+          "category": "groceries"
+        }
+      },
+      "response_contains": ["₹500"],
+      "tool_result_contains": {"add_expense": "Added expense"}
+    },
+    "token_budget": 8000
+  },
+  {
+    "id": "tc_010",
+    "description": "Large amount with comment",
+    "input": "paid 45000 for car service at Maruti",
+    "today": "24 February 2026",
+    "user_id": "99999",
+    "assertions": {
+      "tools_called": ["add_expense"],
+      "tool_args": {
+        "add_expense": {
+          "amount": 45000,
+          "category": ["transport", "other"]
+        }
+      },
+      "response_contains": ["maruti"],
+      "tool_result_contains": {"add_expense": "Added expense"}
+    },
+    "token_budget": 8000
+  }
+]
